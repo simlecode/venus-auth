@@ -54,23 +54,36 @@ func (s *badgerStore) Put(kp *KeyPair) error {
 }
 
 func (s *badgerStore) Delete(token Token) error {
-	key := s.tokenKey(token.String())
-	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Delete(key)
-	})
+	kp, err := s.Get(token)
+	if err != nil {
+		return err
+	}
+	kp.IsDeleted = core.Deleted
+
+	return s.Put(kp)
 }
 
 func (s *badgerStore) Has(token Token) (bool, error) {
 	key := s.tokenKey(token.String())
 	var value []byte
+	var has bool
 	err := s.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(key)
 		if err != nil {
 			return err
 		}
+		if value, err = item.ValueCopy(nil); err != nil {
+			return err
+		}
+		kp := new(KeyPair)
+		if err := kp.FromBytes(value); err != nil {
+			return err
+		}
+		if !kp.IsDeleted {
+			has = true
+		}
 
-		value, err = item.ValueCopy(value)
-		return err
+		return nil
 	})
 	if err != nil {
 		if err.Error() == "Key not found" {
@@ -78,7 +91,7 @@ func (s *badgerStore) Has(token Token) (bool, error) {
 		}
 		return false, err
 	}
-	return true, nil
+	return has, nil
 }
 
 func (s *badgerStore) Get(token Token) (*KeyPair, error) {
@@ -95,6 +108,9 @@ func (s *badgerStore) Get(token Token) (*KeyPair, error) {
 			return kp.FromBytes(val)
 		})
 	})
+	if kp.IsDeleted {
+		return nil, xerrors.Errorf("token %s is deleted", token.String())
+	}
 
 	return kp, err
 }
@@ -124,6 +140,9 @@ func (s *badgerStore) ByName(name string) ([]*KeyPair, error) {
 			err = kp.FromBytes(*val)
 			if err != nil {
 				return err
+			}
+			if kp.IsDeleted {
+				continue
 			}
 			if kp.Name == name {
 				res = append(res, kp)
@@ -177,6 +196,9 @@ func (s *badgerStore) List(skip, limit int64) ([]*KeyPair, error) {
 					close(data)
 					return err
 				}
+				if kp.IsDeleted {
+					continue
+				}
 				data <- kp
 			}
 			idx++
@@ -209,6 +231,9 @@ func (s *badgerStore) GetUser(name string) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
+	if user.IsDeleted {
+		return nil, xerrors.Errorf("user %s is deleted", name)
+	}
 	return user, nil
 }
 
@@ -227,16 +252,29 @@ func (s *badgerStore) UpdateUser(user *User) error {
 	})
 }
 
-func (s *badgerStore) HasUser(name string) (bool, error) {
+// If `skipIsDeleted` is true, whether the user is deleted is ignored
+func (s *badgerStore) hasUser(name string, skipIsDeleted bool) (bool, error) {
 	var value []byte
+	var has bool
 	err := s.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(s.userKey(name))
 		if err != nil {
 			return err
 		}
-
-		value, err = item.ValueCopy(value)
-		return err
+		if value, err = item.ValueCopy(nil); err != nil {
+			return err
+		}
+		user := new(User)
+		if err := user.FromBytes(value); err != nil {
+			return err
+		}
+		if !user.IsDeleted {
+			has = true
+		}
+		if skipIsDeleted {
+			has = true
+		}
+		return nil
 	})
 	if err != nil {
 		if err.Error() == "Key not found" {
@@ -244,10 +282,23 @@ func (s *badgerStore) HasUser(name string) (bool, error) {
 		}
 		return false, err
 	}
-	return true, nil
+	return has, nil
 }
 
+func (s *badgerStore) HasUser(name string) (bool, error) {
+	return s.hasUser(name, false)
+}
+
+// Only used to create new user
 func (s *badgerStore) PutUser(user *User) error {
+	has, err := s.hasUser(user.Name, true)
+	if err != nil {
+		return err
+	}
+	// Do not allow the newly created user to overwrite the deleted user
+	if has {
+		return xerrors.Errorf("found a record")
+	}
 	val, err := user.Bytes()
 	if err != nil {
 		return err
@@ -286,6 +337,9 @@ func (s *badgerStore) ListUsers(skip, limit int64, state int, sourceType core.So
 				if err != nil {
 					return err
 				}
+				if user.IsDeleted {
+					continue
+				}
 				// aggregation multi-select
 				need := false
 				if code&1 == 1 {
@@ -318,9 +372,13 @@ func (s *badgerStore) ListUsers(skip, limit int64, state int, sourceType core.So
 }
 
 func (s *badgerStore) DeleteUser(name string) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Delete(s.userKey(name))
-	})
+	user, err := s.GetUser(name)
+	if err != nil {
+		return err
+	}
+	user.IsDeleted = core.Deleted
+
+	return s.UpdateUser(user)
 }
 
 func (s *badgerStore) HasMiner(maddr address.Address) (bool, error) {
@@ -350,6 +408,9 @@ func (s *badgerStore) HasMiner(maddr address.Address) (bool, error) {
 			err = user.FromBytes(*val)
 			if err != nil {
 				return err
+			}
+			if user.IsDeleted {
+				continue
 			}
 
 			if user.Miner == maddr.String() {
@@ -392,6 +453,9 @@ func (s *badgerStore) GetMiner(maddr address.Address) (*User, error) {
 			err = user.FromBytes(*val)
 			if err != nil {
 				return err
+			}
+			if user.IsDeleted {
+				continue
 			}
 			if user.Miner == maddr.String() {
 				data = user

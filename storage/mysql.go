@@ -68,12 +68,19 @@ func (s *mysqlStore) Put(kp *KeyPair) error {
 }
 
 func (s mysqlStore) Delete(token Token) error {
-	return s.db.Table("token").Delete(&KeyPair{}, "token=?", token).Error
+	has, err := s.Has(token)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return gorm.ErrRecordNotFound
+	}
+	return s.db.Table("token").Where("token=?", token.String()).Update("is_deleted", core.Deleted).Error
 }
 
 func (s mysqlStore) Has(token Token) (bool, error) {
 	var count int64
-	err := s.db.Table("token").Where("token=?", token).Count(&count).Error
+	err := s.db.Table("token").Where("token=? and is_deleted=?", token.String(), core.NotDelete).Count(&count).Error
 	if err != nil {
 		return false, err
 	}
@@ -82,14 +89,14 @@ func (s mysqlStore) Has(token Token) (bool, error) {
 
 func (s mysqlStore) Get(token Token) (*KeyPair, error) {
 	var kp KeyPair
-	err := s.db.Table("token").Take(&kp, "token = ?", token.String()).Error
+	err := s.db.Table("token").Take(&kp, "token = ? and is_deleted=?", token.String(), core.NotDelete).Error
 
 	return &kp, err
 }
 
 func (s *mysqlStore) ByName(name string) ([]*KeyPair, error) {
 	var tokens []*KeyPair
-	err := s.db.Find(&tokens, "name = ?", name).Error
+	err := s.db.Find(&tokens, "name = ? and is_deleted=?", name, core.NotDelete).Error
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +105,7 @@ func (s *mysqlStore) ByName(name string) ([]*KeyPair, error) {
 
 func (s mysqlStore) List(skip, limit int64) ([]*KeyPair, error) {
 	var tokens []*KeyPair
-	err := s.db.Offset(int(skip)).Limit(int(limit)).Order("name").Find(&tokens).Error
+	err := s.db.Offset(int(skip)).Limit(int(limit)).Order("name").Find(&tokens, "is_deleted=?", core.NotDelete).Error
 	if err != nil {
 		return nil, err
 	}
@@ -114,17 +121,26 @@ func (s *mysqlStore) UpdateToken(kp *KeyPair) error {
 		"token":      kp.Token,
 		"createTime": kp.CreateTime,
 	}
-	return s.db.Table("token").Where("token = ?", kp.Token.String()).UpdateColumns(columns).Error
+	return s.db.Table("token").Where("token = ? and is_deleted=?", kp.Token.String(), core.NotDelete).UpdateColumns(columns).Error
 
 }
 
-func (s mysqlStore) HasUser(name string) (bool, error) {
+func (s mysqlStore) hasUser(name string, skipIsDeleted bool) (bool, error) {
 	var count int64
-	err := s.db.Table("users").Where("name=? and is_deleted=?", name, core.NotDelete).Count(&count).Error
+	var err error
+	if skipIsDeleted {
+		err = s.db.Table("users").Where("name=?", name).Count(&count).Error
+	} else {
+		err = s.db.Table("users").Where("name=? and is_deleted=?", name, core.NotDelete).Count(&count).Error
+	}
 	if err != nil {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (s mysqlStore) HasUser(name string) (bool, error) {
+	return s.hasUser(name, false)
 }
 
 func (s *mysqlStore) UpdateUser(user *User) error {
@@ -132,6 +148,13 @@ func (s *mysqlStore) UpdateUser(user *User) error {
 }
 
 func (s *mysqlStore) PutUser(user *User) error {
+	has, err := s.hasUser(user.Name, true)
+	if err != nil {
+		return err
+	}
+	if has {
+		return xerrors.Errorf("found a record")
+	}
 	return s.db.Table("users").Save(user).Error
 }
 

@@ -129,6 +129,6 @@ func (o *Page) GetLimit() int64 {
 }
 
 const (
-	NotDelete = -1
-	Deleted   = 1
+	NotDelete = false
+	Deleted   = true
 )

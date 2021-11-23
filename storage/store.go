@@ -60,6 +60,7 @@ type KeyPair struct {
 	Extra      string    `gorm:"column:extra;type:varchar(255);"`
 	Token      Token     `gorm:"column:token;type:varchar(512);uniqueIndex:token_token_IDX,type:hash;not null"`
 	CreateTime time.Time `gorm:"column:createTime;type:datetime;NOT NULL"`
+	IsDeleted  bool      `gorm:"column:is_deleted;index;default:0;NOT NULL"`
 }
 
 func (*KeyPair) TableName() string {
@@ -104,7 +105,7 @@ type User struct {
 	State      int             `gorm:"column:state;type:tinyint(4);default:0;NOT NULL"`
 	CreateTime time.Time       `gorm:"column:createTime;type:datetime;NOT NULL"`
 	UpdateTime time.Time       `gorm:"column:updateTime;type:datetime;NOT NULL"`
-	IsDeleted  int             `gorm:"column:is_deleted;index;default:-1;NOT NULL"`
+	IsDeleted  bool            `gorm:"column:is_deleted;index;default:0;NOT NULL"`
 }
 
 type UserRateLimit struct {

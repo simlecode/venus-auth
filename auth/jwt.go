@@ -133,7 +133,8 @@ func (o *jwtOAuth) GenerateToken(ctx context.Context, pl *JWTPayload) (string, e
 		return token.String(), nil
 	}
 
-	err = o.store.Put(&storage.KeyPair{Token: token, Secret: hex.EncodeToString(secret), CreateTime: time.Now(), Name: pl.Name, Perm: pl.Perm, Extra: pl.Extra})
+	err = o.store.Put(&storage.KeyPair{Token: token, Secret: hex.EncodeToString(secret), CreateTime: time.Now(),
+		Name: pl.Name, Perm: pl.Perm, Extra: pl.Extra, IsDeleted: core.NotDelete})
 	if err != nil {
 		return core.EmptyString, xerrors.Errorf("store token failed :%s", err)
 	}
@@ -164,6 +165,21 @@ type TokenInfo struct {
 	Perm       string    `json:"perm"`
 	Custom     string    `json:"custom"`
 	CreateTime time.Time `json:"createTime"`
+	IsDeleted  bool      `json:"isDeleted"`
+}
+
+func toTokenInfo(kp *storage.KeyPair) (*TokenInfo, error) {
+	jwtPayload, err := util.JWTPayloadMap(string(kp.Token))
+	if err != nil {
+		return nil, err
+	}
+	return &TokenInfo{
+		Token:      kp.Token.String(),
+		CreateTime: kp.CreateTime,
+		Name:       jwtPayload["name"].(string),
+		Perm:       jwtPayload["perm"].(string),
+		IsDeleted:  kp.IsDeleted,
+	}, nil
 }
 
 func (o *jwtOAuth) GetToken(c context.Context, token string) (*TokenInfo, error) {
@@ -171,16 +187,7 @@ func (o *jwtOAuth) GetToken(c context.Context, token string) (*TokenInfo, error)
 	if err != nil {
 		return nil, err
 	}
-	jwtPayload, err := util.JWTPayloadMap(string(pair.Token))
-	if err != nil {
-		return nil, err
-	}
-	return &TokenInfo{
-		Token:      pair.Token.String(),
-		CreateTime: pair.CreateTime,
-		Name:       jwtPayload["name"].(string),
-		Perm:       jwtPayload["perm"].(string),
-	}, nil
+	return toTokenInfo(pair)
 }
 
 func (o *jwtOAuth) GetTokenByName(c context.Context, name string) ([]*TokenInfo, error) {
@@ -190,16 +197,11 @@ func (o *jwtOAuth) GetTokenByName(c context.Context, name string) ([]*TokenInfo,
 	}
 	tokenInfos := make([]*TokenInfo, 0, len(pairs))
 	for _, pair := range pairs {
-		jwtPayload, err := util.JWTPayloadMap(string(pair.Token))
+		tokenInfo, err := toTokenInfo(pair)
 		if err != nil {
 			return nil, err
 		}
-		tokenInfos = append(tokenInfos, &TokenInfo{
-			Token:      pair.Token.String(),
-			CreateTime: pair.CreateTime,
-			Name:       jwtPayload["name"].(string),
-			Perm:       jwtPayload["perm"].(string),
-		})
+		tokenInfos = append(tokenInfos, tokenInfo)
 	}
 	return tokenInfos, nil
 }
@@ -210,17 +212,12 @@ func (o *jwtOAuth) Tokens(ctx context.Context, skip, limit int64) ([]*TokenInfo,
 		return nil, err
 	}
 	tks := make([]*TokenInfo, 0, limit)
-	for _, v := range pairs {
-		jwtPayload, err := util.JWTPayloadMap(string(v.Token))
+	for _, pair := range pairs {
+		tokenInfo, err := toTokenInfo(pair)
 		if err != nil {
 			return nil, err
 		}
-		tks = append(tks, &TokenInfo{
-			Token:      v.Token.String(),
-			CreateTime: v.CreateTime,
-			Name:       jwtPayload["name"].(string),
-			Perm:       jwtPayload["perm"].(string),
-		})
+		tks = append(tks, tokenInfo)
 	}
 	return tks, nil
 }
@@ -259,6 +256,7 @@ func (o *jwtOAuth) CreateUser(ctx context.Context, req *CreateUserRequest) (*Cre
 		State:      req.State,
 		CreateTime: time.Now().Local(),
 		UpdateTime: time.Now().Local(),
+		IsDeleted:  core.NotDelete,
 	}
 	err = o.store.PutUser(userNew)
 	if err != nil {
